@@ -587,7 +587,7 @@ vec3 getColor(float id, float lightMult, float specVal, vec3 point, vec3 norms, 
   float ao = 0.5 + 0.5 *norms.y; // estimate ambient occlusion (IQ)
   float noiseTermGrass = smoothstep(0.0, 1.0, fbm2(point * 6.0)); // for coloring grass
   float noiseTerm = smoothstep(0.0, 1.0, fbm2(point)); // for coloring pumpkins
-    
+      
   // additional lights
   vec3 light1Dir = vec3(0.0, 10.0, 5.0); // direction of the light
   vec3 light1Col = vec3(0.2627, 0.0745, 0.4392); // color of the light
@@ -649,8 +649,10 @@ vec3 getColor(float id, float lightMult, float specVal, vec3 point, vec3 norms, 
         return coloring;
     }
     // stem
-    if (id == 3.0){              
+    if (id == 3.0){  
+        float stemNoise = smoothstep(0.0, 1.0, fbm2(point * 4.0));
         coloring = vec3(0.4118, 0.3059, 0.0745) * lightMult;
+        coloring *= stemNoise;
         coloring *= ao * 1.5;  
         coloring += intensity1 * light1Col;
         coloring += intensity2 * light2Col;

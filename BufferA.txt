@@ -1,0 +1,737 @@
+const int RAY_STEPS = 300;
+const float MIN_DIST = 0.0;
+const float MAX_DIST = 100.0;
+const float EPSILON = 0.0001;
+const float PI = 3.14159;
+const float FIVETAP_K = 2.0;
+const float AO_DIST = 0.085;
+
+// Cosine palette variables
+const vec3 a = vec3(0.5, 0.5, 0.5);
+const vec3 b = vec3(0.5, 0.5, 0.5);
+const vec3 c = vec3(1.0, 1.0, 1.0);
+const vec3 d = vec3(0.0, 0.10, 0.20);
+
+// Operations
+// polynomial smooth min (k = 0.1);
+float smin( float a, float b, float k )
+{
+    float h = clamp( 0.5+0.5*(b-a)/k, 0.0, 1.0 );
+    return mix( b, a, h ) - k*h*(1.0-h);
+}
+//Union
+float unionOp( float d1, float d2){
+    return smin(d1,d2, 0.1); // smooth
+}
+
+//Substraction 
+// d1 - d2
+float subOp( float d1, float d2 ){
+    return max(-d1,d2);
+}
+
+//Intersection 
+float intersectOp( float d1, float d2 ){
+    return max(d1,d2);
+}
+
+// rotation
+vec2 rot(vec2 v, float y){
+    return cos(y)*v + sin(y)*vec2(-v.y, v.x);
+}
+
+// Min, pick color of closest object
+// pick the vector for the closests object so you grab the correct color along with position
+vec3 minVec(vec3 a, vec3 b){
+    if (a.x < b.x) {
+        return a;
+    }
+    return b;
+}
+
+// Shapes
+// from http://www.iquilezles.org/www/articles/distfunctions/distfunctions.htm
+// Sphere
+float sphereSDF(vec3 point, float r){
+  return length(point) - r;
+}
+
+float planeSDF( vec3 p )
+{
+	return p.y;
+}
+
+float boxSDF( vec3 p, vec3 b )
+{
+    vec3 d = abs(p) - b;
+    return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));
+}
+
+// random, noise, and fbm from Book of Shaders
+float random (in vec2 st) {
+    return fract(sin(dot(st.xy,
+                         vec2(12.9898,78.233)))*
+        43758.5453123);
+}
+
+float noise (in vec2 st) {
+    vec2 i = floor(st);
+    vec2 f = fract(st);
+
+    // Four corners in 2D of a tile
+    float a = random(i);
+    float b = random(i + vec2(1.0, 0.0));
+    float c = random(i + vec2(0.0, 1.0));
+    float d = random(i + vec2(1.0, 1.0));
+
+    vec2 u = f * f * (3.0 - 2.0 * f);
+
+    return mix(a, b, u.x) +
+            (c - a)* u.y * (1.0 - u.x) +
+            (d - b) * u.x * u.y;
+}
+
+// based on lecture slides and Book of Shaders
+float fbm (in vec2 st) {
+    // Initial values
+    float total = 0.0;
+    float persist = 0.5;
+    int octaves = 6;
+    
+    // Loop for number of octaves
+    for (int i = 0; i < octaves; i++) {
+          float frequency = pow(3.0, float(i));
+          float amp = pow(persist, float(i));
+        total +=  noise(vec2(st.x * frequency, st.y * frequency)) * amp;       
+    }
+    return total;
+}
+
+// for the hay barrel thing
+// modified to add noise
+float roundBoxNoiseSDF( vec3 p, vec3 b, float r )
+{
+  float n = clamp(fbm(p.xy/10.0), 0.0, 1.0);
+  vec3 d = abs(vec3(p.x - (n), p.y - (n * 0.1), p.z - (n * 0.4))) - b;
+  return length(max(d,0.0)) - r;          
+}
+
+float roundBoxSDF( vec3 p, vec3 b, float r )
+{
+  vec3 d = abs(p) - b;
+  return length(max(d,0.0)) - r
+         + min(max(d.x,max(d.y,d.z)),0.0); // remove this line for an only partially signed sdf 
+}
+
+float coneSDF( vec3 p, vec2 c )
+{
+    // c must be normalized
+    float q = length(p.xy);
+    return dot(c,vec2(q,p.z));
+}
+
+// https://www.shadertoy.com/view/ldlcRf
+// modified coneSDF
+vec2 stemSDF( in vec3 p, in float h, in float r1, in float r2 )
+{
+    float d1 = -p.y - h;
+    float q = (p.y - h);
+    r2 = (q * r2) + 0.08;
+    float si = 0.5*(r1-r2)/h;
+    float d2 = max( sqrt( dot(p.xz,p.xz)*(1.0-si*si)) + q*si - r2, q );
+    return vec2(length(max(vec2(d1,d2),0.0)) + min(max(d1,d2), 0.), q);
+}
+
+// Ellipsoid
+float ellipsoidSDF(vec3 p, vec3 r) {
+    float k0 = length(p / r);
+    float k1 = length(p / (r * r));
+    return k0 * (k0 - 1.0) / k1;
+}
+
+// tool box function
+float bias(float b, float t){
+return pow(t, log(b) / log(0.5f));
+}
+
+float gain(float g, float t){
+  if(t < 0.5f){
+    return bias(1.0 - g, 2.0 * t) / 2.0;
+  }
+  else{
+    return 1.0 - bias(1.0 - g, 2.0 - 2.0 * t) / 2.0;
+  }
+}
+
+// matrix
+const mat3 m = mat3( 0.80,  0.80,  0.60,
+                    -0.80,  0.36, -0.48,
+                    -0.60, -0.48,  0.80 );
+
+// hash function from IQ shader
+float hash( float n )
+{
+    return fract(sin(n)*4121.15393);
+}
+
+// noise from IQ shader
+float hashNoise( in vec3 x )
+{
+    vec3 p = floor(x);
+    vec3 f = fract(x);
+
+    f = f*f*(3.0-2.0*f);
+
+    float n = p.x + p.y*157.0 + 113.0*p.z;
+
+    return mix(mix(mix( hash(n+  0.0), hash(n+  1.0),f.x),
+                   mix( hash(n+157.0), hash(n+158.0),f.x),f.y),
+               mix(mix( hash(n+113.0), hash(n+114.0),f.x),
+                   mix( hash(n+270.0), hash(n+271.0),f.x),f.y),f.z);
+}
+//FBM Func from IQ shader
+float fbm2( vec3 p )
+{
+    float f = 0.0;
+
+    f += 0.5000*hashNoise( p ); p = m*p*2.02;
+    f += 0.2500*hashNoise( p ); p = m*p*2.03;
+    f += 0.1250*hashNoise( p ); p = m*p*2.01;
+    f += 0.0625*hashNoise( p );
+
+    return f/0.9375;
+}
+
+// http://iquilezles.org/www/articles/smin/smin.htm
+float smax( float a, float b, float k )
+{
+	float h = clamp( 0.5 + 0.5*(b-a)/k, 0.0, 1.0 );
+	return mix( a, b, h ) + k*h*(1.0-h);
+}
+
+// http://iquilezles.org/www/articles/smin/smin.htm
+vec3 smax( vec3 a, vec3 b, float k )
+{
+	vec3 h = clamp( 0.5 + 0.5*(b-a)/k, 0.0, 1.0 );
+	return mix( a, b, h ) + k*h*(1.0-h);
+}
+
+// https://www.shadertoy.com/view/ld3Gz2
+vec3 background( in vec3 d )
+{
+    // IQ cubemap
+    vec3 n = abs(d);
+    vec2 uv = (n.x>n.y && n.x>n.z) ? d.yz/d.x: 
+              (n.y>n.x && n.y>n.z) ? d.zx/d.y:
+                                     d.xy/d.z;
+    
+    // IQ blur
+    vec3  col = vec3( 0.0 );
+    for( int i=0; i<100; i++ )
+    {
+        float h = float(i)/300.0;
+        float an = 31.0*6.2831*h;
+        vec2  of = vec2( cos(an), sin(an) ) * h;
+        vec3 tmp = texture(iChannel1, uv*0.25 + 0.0075*of, 4.0 ).yxz;
+        col = smax(col, tmp, 0.9 );       
+    }
+    
+    //return pow(col,vec3(3.5,3.0,6.0))*0.2;
+    return mix(col,vec3(0.0,0.0,1.0), 0.5);
+}
+
+// http://mercury.sexy/hg_sdf/
+// Repeating around origin by angle amount
+float pModPolar(inout vec2 p, float repetitions) {
+    float angle = 2.*PI/repetitions;
+    float a = atan(p.y, p.x) + angle/2.;
+    float r = length(p);
+    float c = floor(a/angle);
+    a = mod(a,angle) - angle/2.0;
+    p = vec2(cos(a), sin(a))*r;
+    // For an odd number of repetitions, fix cell index of the cell in -x direction
+    // (cell index would be e.g. -5 and 5 in the two halves of the cell):
+    if (abs(c) >= (repetitions/2.)){ 
+      c = abs(c);
+      }
+    return c;    
+}
+    
+
+// SDFs in the scene
+vec3 sceneSDF(vec3 point){ 
+    
+    // Floor
+    float floor = boxSDF(point-vec3(0,-4,0), vec3(20.0,1.0,20.0));
+    
+    vec3 offset1 = vec3(-4.0, 2.0, -3.0);
+        
+    // PUMKPIN 1
+    vec3 rp = point - vec3(-1.0, 0.0, 2.0) + offset1; // point to rotate about to create shape
+    pModPolar(rp.xz, 17.0);
+    // *vec3 is scaling of the sections, -vec3 is dimension length  
+    float p1 = length(rp*vec3(0.9,0.7,1.0)-vec3(0.2,0.0,0))-1.0;    
+    
+    // STEM 1
+    vec3 stemScale1 = vec3(0.2, 0.3, 0.2) ;
+    vec3 stemPos1 = point - vec3(-1.0, 1.5, 2.3) + offset1;
+    vec2 stem1 = stemSDF(stemPos1, stemScale1.y, stemScale1.x, stemScale1.z);
+   
+    // PUMPKIN 2 - tilted on left
+    vec3 rp2 = point - vec3(-3.0, -1.8, 8.0);;
+    rp2.yz = rot(rp2.yz, -0.523599); // rotate by 30 degrees    
+    pModPolar(rp2.xz, 20.0);
+    // *vec3 is scaling of the sections, -vec3 is dimension length  
+    float p2 = length(rp2*vec3(0.9,0.9,1.2)-vec3(0.2,0.0,0))-0.5;    
+        
+    // STEM 2
+    vec3 stemScale2 = vec3(0.1, 0.3, 0.2) ;
+    vec3 stemPos2 = point - vec3(-3.0, -1.3, 8.3);
+    vec3 rotStem2 = stemPos2;
+    rotStem2.yz = rot(rotStem2.yz, -0.523599);
+    vec2 stem2 = stemSDF(rotStem2, stemScale2.y, stemScale2.x, stemScale2.z);
+    
+    // PUMPKIN 3 - left one in back
+    vec3 offset3 = vec3(4.0, 2.0, -3.0);
+    vec3 rp3 = point - vec3(1.0, 0.0, 2.0) + offset3; // point to rotate about to create shape
+    rp3 = rp3 / vec3(0.8, 0.8, 0.8);    
+    pModPolar(rp3.xz, 25.0);
+    // *vec3 is scaling of the sections, -vec3 is dimension length  
+    float p3 = length(rp3*vec3(0.9,0.9,1.2)-vec3(0.2,0.0,0))-1.0;
+    
+    // STEM 3
+    vec3 stemScale3 = vec3(0.2, 0.3, 0.2) ;
+    vec3 stemPos3 = point - vec3(1.0, 1.0, 2.1) + offset3;
+    vec2 stem3 = stemSDF(stemPos3, stemScale3.y, stemScale3.x, stemScale3.z);
+    
+    // PUMPKIN 4
+    vec3 offset4 = vec3(-2.5, 2.0, -1.0);
+    vec3 rp4 = point - vec3(1.0, 0.0, 2.0) + offset4; // point to rotate about to create shape
+    rp4 = rp4 / vec3(0.8, 0.8, 0.7);    
+    pModPolar(rp4.xz, 22.0);
+    // *vec3 is scaling of the sections, -vec3 is dimension length  
+    float p4 = length(rp4*vec3(0.9,0.8,1.2)-vec3(0.2,0.0,0))-1.0;
+    
+    // STEM 4
+    vec3 stemScale4 = vec3(0.2, 0.3, 0.2) ;
+    vec3 stemPos4 = point - vec3(1.0, 1.2, 2.1) + offset4;
+    vec2 stem4 = stemSDF(stemPos4, stemScale4.y, stemScale4.x, stemScale4.z);
+    
+    // PUMPKIN 5 pumpkin on hay barrel
+    vec3 offset5 = vec3(1, -0.1, 3.0);
+    vec3 rp5 = point - vec3(1.0, 0.0, 2.0) + offset5; // point to rotate about to create shape    
+    pModPolar(rp5.xz, 22.0);
+    // *vec3 is scaling of the sections, -vec3 is dimension length  
+    float p5 = length(rp5*vec3(0.8,1.0,1.2)-vec3(0.2,0.0,0))-1.0;
+    
+    // STEM 5
+    vec3 stemScale5 = vec3(0.2, 0.3, 0.2) ;
+    vec3 stemPos5 = point - vec3(1.0, 1.2, 2.1) + offset5;    
+    vec2 stem5 = stemSDF(stemPos5, stemScale5.y, stemScale5.x, stemScale5.z);
+    
+    // HAY BARREL
+    float hayBox = roundBoxNoiseSDF(point + vec3(0.5, 1.9, 3.0), vec3(2.0, 1.0,3.0), 0.4);
+    
+    // BACKGROUND PUMPKIN (6) middle one
+    vec3 offset6 = vec3(-4.0, 1.5, 18.0);
+    vec3 rp6 = point - vec3(1.0, 0.0, 2.0) + offset6; // point to rotate about to create shape    
+    float p6 = ellipsoidSDF(rp6, vec3(2.0, 1.5, 0.1));
+    // BACKGROUND STEM (6)
+    vec3 stemScale6 = vec3(0.1, 0.3, 0.1) ;
+    vec3 stemPos6 = point - vec3(1.0, 1.5, 2.1) + offset6;   
+    float stem6 = boxSDF(stemPos6, stemScale6);
+    // BACKGROUND PUMPKIN (7) rightmost one
+    vec3 offset7 = vec3(-9.0, 1.8, 14.0);
+    vec3 rp7 = point - vec3(1.0, 0.0, 2.0) + offset7; // point to rotate about to create shape   
+    float p7 = ellipsoidSDF(rp7, vec3(1.8, 1.5, 0.1));
+    // BACKGROUND STEM (7)
+    vec3 stemScale7 = vec3(0.15, 0.3, 0.1);
+    vec3 stemPos7 = point - vec3(1.0, 1.5, 2.1) + offset7;    
+    float stem7 = boxSDF(stemPos7, stemScale7);
+    // BACKGROUND PUMPKIN (8) - little on on left
+    vec3 offset8 = vec3(7.5, 0.8, 17.0);
+    vec3 rp8 = point - vec3(1.0, 0.0, 2.0) + offset8; // point to rotate about to create shape    
+    float p8 = ellipsoidSDF(rp8, vec3(1.0, 1.0, 0.1));
+    // BACKGROUND STEM (8)
+    vec3 stemScale8 = vec3(0.08, 0.3, 0.1);
+    vec3 stemPos8 = point - vec3(1.0, 1.0, 2.1) + offset8;    
+    float stem8 = boxSDF(stemPos8, stemScale8);
+    // BACKGROUND HAY BARREL (2)
+    float hayBox2 = roundBoxSDF(point + vec3(7.5, 3.0, 15.0), vec3(2.0, 1.0, 0.1), 0.4);
+    // BACKGROUND HAY BARREL (3)
+    float hayBox3 = roundBoxSDF(point + vec3(11.3, 2.0, 15.0), vec3(3.0, 2.0, 0.1), 0.4);
+        
+    // CROW
+    vec3 crowOffset = vec3(0.0, -4.0, 14.0);
+    vec3 crowPos = point + crowOffset;
+    float noiseTerm = smoothstep(0.0, 1.0, fbm2(point)); 
+    float move = 1.0 - (sin(iTime * 2.0) + 1.0);     
+    crowPos.y += move + (0.15 * noiseTerm);
+    crowPos.x = (crowPos.x + 60.0) + 1.0 - (sin(mod(iTime * 0.25, PI/2.0))+ 1.0) * 40.0;// last # is multipler for the movement term
+    float crowBody = ellipsoidSDF(crowPos, vec3(0.6, 0.1, 0.1));
+    vec3 wingPos = point + crowOffset + vec3(-0.1, 0.2, 0.0); // get wing into correct spot
+    wingPos.y += move + (0.15 * noiseTerm);
+    wingPos.x = (wingPos.x + 60.0) + 1.0 - (sin(mod(iTime * 0.25, PI/2.0))+ 1.0) * 40.0;
+    wingPos.yz = rot(wingPos.yz, sin(iTime * 4.0));
+    crowBody = unionOp(crowBody, ellipsoidSDF(wingPos, vec3(0.2, 0.3, 0.1)));
+        
+    // SCARECROW
+    vec3 scOffset = vec3(-8.0, -0.5, 15.0);    
+    vec3 headPos = point + scOffset + vec3(0.0, -1.0, 0.0);
+    float head = sphereSDF(headPos, 0.6);
+    vec3 bodyPos = point + scOffset;
+    float body = ellipsoidSDF(bodyPos, vec3(0.4, 1.1, 0.1));
+    // legs
+    vec3 leftLegPos = point + scOffset + vec3(0.4, 1.3, 0.0);
+    leftLegPos.xy = rot(leftLegPos.xy, 0.349066);  
+    float leftLeg = ellipsoidSDF(leftLegPos, vec3(0.2, 0.6, 0.1));
+    
+    vec3 rightLegPos = point + scOffset + vec3(-0.4, 1.3, 0.0);
+    rightLegPos.xy = rot(rightLegPos.xy, -0.349066);  
+    float rightLeg = ellipsoidSDF(rightLegPos, vec3(0.2, 0.6, 0.1));
+    // arms
+    vec3 armsPos = point + scOffset + vec3(0.0, -0.3, 0.0);
+    float arms = ellipsoidSDF(armsPos, vec3(1.5, 0.2, 0.1));
+    // hands
+    vec3 leftHandPos = point + scOffset + vec3(1.5, -0.1, 0.0);
+    leftHandPos.xy = rot(leftHandPos.xy, -0.785398);
+    float leftHand = ellipsoidSDF(leftHandPos, vec3(0.3, 0.2, 0.1));
+    
+    vec3 rightHandPos = point + scOffset + vec3(-1.5, -0.1, 0.0);
+    rightHandPos.xy = rot(rightHandPos.xy, 0.785398);
+    float rightHand = ellipsoidSDF(rightHandPos, vec3(0.3, 0.2, 0.1));
+    // hat rim
+    vec3 hatPos = point + scOffset + vec3(0.0, -1.2, -0.2);    
+    float hat = ellipsoidSDF(hatPos, vec3(1.0, 0.2, 0.1));
+    // stick
+    vec3 stickPos = point + scOffset + vec3(0.0, 1.0, 0.0);
+    float stick = boxSDF(stickPos, vec3(0.1, 3.0, 0.1));        
+        
+    // draw scene
+    vec3 temp = vec3(floor, 0.0, 0.0);    
+    temp = minVec(temp, vec3(p1, 1.5, 0.0));
+    temp = minVec(temp, vec3(stem1.x, 3.0, 0.0));
+    temp = minVec(temp, vec3(p2, 1.6, 0.0));   
+    temp = minVec(temp, vec3(stem2.x, 3.0, 0.0));
+    temp = minVec(temp, vec3(p3, 1.0, 0.0));
+    temp = minVec(temp, vec3(stem3.x, 3.0, 0.0));
+    temp = minVec(temp, vec3(p5, 1.6, 0.0));
+    temp = minVec(temp, vec3(stem5.x, 3.0, 0.0));
+    temp = minVec(temp, vec3(hayBox, 4.0, 0.0));
+    temp = minVec(temp, vec3(p6, 5.0, 0.0));
+    temp = minVec(temp, vec3(stem6, 5.0, 0.0));
+    temp = minVec(temp, vec3(p7, 5.0, 0.0));
+    temp = minVec(temp, vec3(stem7, 5.0, 0.0));
+    temp = minVec(temp, vec3(p8, 5.0, 0.0));
+    temp = minVec(temp, vec3(stem8, 5.0, 0.0));
+    temp = minVec(temp, vec3(hayBox2, 5.0, 0.0));
+    temp = minVec(temp, vec3(hayBox3, 5.0, 0.0));    
+    temp = minVec(temp, vec3(crowBody, 5.0, 0.0));       
+    temp = minVec(temp, vec3(head, 7.0, 0.0)); 
+    temp = minVec(temp, vec3(body, 7.0, 0.0));
+    temp = minVec(temp, vec3(leftLeg, 7.0, 0.0));
+    temp = minVec(temp, vec3(rightLeg, 7.0, 0.0));
+    temp = minVec(temp, vec3(arms, 7.0, 0.0));
+    temp = minVec(temp, vec3(leftHand, 7.0, 0.0));
+    temp = minVec(temp, vec3(rightHand, 7.0, 0.0));
+    temp = minVec(temp, vec3(hat, 7.0, 0.0));
+    temp = minVec(temp, vec3(stick, 7.0, 0.0));
+
+    return temp;
+}
+
+// SDF to shadow in the scene
+vec3 sceneSDFShadows(vec3 point){ 
+    
+   // Floor
+    float floor = boxSDF(point-vec3(0,-4,0), vec3(20.0,1.0,20.0));
+    
+    vec3 offset1 = vec3(-4.0, 2.0, -3.0);
+        
+    // PUMKPIN 1
+    vec3 rp = point - vec3(-1.0, 0.0, 2.0) + offset1; // point to rotate about to create shape
+    pModPolar(rp.xz, 17.0);
+    // *vec3 is scaling of the sections, -vec3 is dimension length  
+    float p1 = length(rp*vec3(0.9,0.7,1.0)-vec3(0.2,0.0,0))-1.0;    
+    
+    // STEM 1
+    vec3 stemScale1 = vec3(0.2, 0.3, 0.2) ;
+    vec3 stemPos1 = point - vec3(-1.0, 1.5, 2.3) + offset1;
+    vec2 stem1 = stemSDF(stemPos1, stemScale1.y, stemScale1.x, stemScale1.z);
+   
+    // PUMPKIN 2 - tilted on left
+    vec3 rp2 = point - vec3(-3.0, -1.8, 8.0);;
+    rp2.yz = rot(rp2.yz, -0.523599); // rotate by 30 degrees    
+    pModPolar(rp2.xz, 20.0);
+    // *vec3 is scaling of the sections, -vec3 is dimension length  
+    float p2 = length(rp2*vec3(0.9,0.9,1.2)-vec3(0.2,0.0,0))-0.5;    
+        
+    // STEM 2
+    vec3 stemScale2 = vec3(0.1, 0.3, 0.2) ;
+    vec3 stemPos2 = point - vec3(-3.0, -1.3, 8.3);
+    vec3 rotStem2 = stemPos2;
+    rotStem2.yz = rot(rotStem2.yz, -0.523599);
+    vec2 stem2 = stemSDF(rotStem2, stemScale2.y, stemScale2.x, stemScale2.z);
+    
+    // PUMPKIN 3 - left on in back
+    vec3 offset3 = vec3(4.0, 2.0, -3.0);
+    vec3 rp3 = point - vec3(1.0, 0.0, 2.0) + offset3; // point to rotate about to create shape
+    rp3 = rp3 / vec3(0.8, 0.8, 0.8);    
+    pModPolar(rp3.xz, 25.0);
+    // *vec3 is scaling of the sections, -vec3 is dimension length  
+    float p3 = length(rp3*vec3(0.9,0.9,1.2)-vec3(0.2,0.0,0))-1.0;
+    
+    // STEM 3
+    vec3 stemScale3 = vec3(0.2, 0.3, 0.2) ;
+    vec3 stemPos3 = point - vec3(1.0, 1.0, 2.1) + offset3;
+    vec2 stem3 = stemSDF(stemPos3, stemScale3.y, stemScale3.x, stemScale3.z);
+        
+    // PUMPKIN 5 pumpkin on hay barrel
+    vec3 offset5 = vec3(1, -0.1, 3.0);
+    vec3 rp5 = point - vec3(1.0, 0.0, 2.0) + offset5; // point to rotate about to create shape   
+    pModPolar(rp5.xz, 22.0);
+    // *vec3 is scaling of the sections, -vec3 is dimension length  
+    float p5 = length(rp5*vec3(0.8,1.0,1.2)-vec3(0.2,0.0,0))-1.0;
+    
+    // STEM 5
+    vec3 stemScale5 = vec3(0.2, 0.3, 0.2) ;
+    vec3 stemPos5 = point - vec3(1.0, 1.2, 2.1) + offset5;
+    vec2 stem5 = stemSDF(stemPos5, stemScale5.y, stemScale5.x, stemScale5.z);
+    
+    // HAY BARREL
+    float hayBox = roundBoxNoiseSDF(point + vec3(0.5, 1.9, 3.0), vec3(2.0, 1.0,3.0), 0.4);   
+    
+    vec3 temp = vec3(floor, 0.0, 0.0);
+    temp = minVec(temp, vec3(p1, 1.5, 0.0));
+    temp = minVec(temp, vec3(stem1.x, 3.0, 0.0));
+    temp = minVec(temp, vec3(p2, 1.6, 0.0));   
+    temp = minVec(temp, vec3(stem2.x, 3.0, 0.0));
+    temp = minVec(temp, vec3(p3, 1.0, 0.0));
+    temp = minVec(temp, vec3(stem3.x, 3.0, 0.0));
+    temp = minVec(temp, vec3(p5, 1.5, 0.0));
+    temp = minVec(temp, vec3(stem5.x, 3.0, 0.0));
+    temp = minVec(temp, vec3(hayBox, 4.0, 0.0));    
+    return temp;
+}
+
+// Penumbra Shadows
+float softShadow(vec3 dir, vec3 origin, float min_t, float k) {
+    float res = 1.0;
+    float t = min_t; 
+    for(int i = 0; i < RAY_STEPS; ++i) {
+        float m = sceneSDFShadows(origin + t * dir).x;
+        if(m < 0.0001) {
+            return 0.025;
+        }
+        res = min(res, k * m / t);
+        t += m;
+    }
+    return res;
+}
+
+// calculate normals
+vec3 getNormals(vec3 pos) {
+   vec3 eps = vec3(0.0, 0.001, 0.0);
+    vec3 normals =  normalize(vec3(
+        sceneSDF(vec3(pos + eps.yxz)).x - sceneSDF(vec3(pos - eps.yxz)).x,
+        sceneSDF(vec3(pos + eps.xyz)).x - sceneSDF(vec3(pos - eps.xyz)).x,
+        sceneSDF(vec3(pos + eps.xzy)).x - sceneSDF(vec3(pos - eps.xzy)).x
+    ));
+   return normals;
+}
+
+// raymarching
+// in vec3: .x is float, .y is colorID
+vec3 march(vec3 pos, vec3 dir, float start, float end) {
+ 
+    float depth = start;
+    float dist = 0.0;
+    float col= 0.0;
+
+    vec3 temp = vec3(0.0);
+
+    for (int i = 0; i < RAY_STEPS; i++) {
+      temp = sceneSDF(pos + depth * dir);
+        dist = temp.x;
+        col = temp.y;    
+
+        if (dist < EPSILON) {
+            return vec3(depth, col, 0.0);
+        }
+        depth += dist;
+        if (depth >= end) {
+            return vec3(end, col, 0.0);
+        }
+    }
+    return vec3(end, col, 0.0);
+}
+
+// Return the normalized direction to march in from the eye point for a single pixel.
+// fieldOfView - vertical field of view in degrees
+// size - resolution of the output image
+// fragCoord - the x,y coordinate of the pixel in the output image
+vec3 rayDirection(float fieldOfView, vec2 size, vec2 fragCoord) {
+    vec2 xy = fragCoord - size / 2.0;
+    float z = size.y / tan(radians(fieldOfView) / 2.0);
+    return normalize(vec3(xy, -z));
+}
+
+// color remapping
+vec3 cosinePalette(float t) {
+  return a + b * cos(6.2831 * (c * t + d));
+}  
+
+// color IDs
+vec3 getColor(float id, float lightMult, float specVal, vec3 point, vec3 norms, float shadows, vec3 lightCol, vec3 backgroundCol) {
+  vec3 coloring = vec3(0.0);
+  float ao = 0.5 + 0.5 *norms.y; // estimate ambient occlusion (IQ)
+  float noiseTermGrass = smoothstep(0.0, 1.0, fbm2(point * 6.0)); // for coloring grass
+  float noiseTerm = smoothstep(0.0, 1.0, fbm2(point)); // for coloring pumpkins
+    
+  // additional lights
+  vec3 light1Dir = vec3(0.0, 10.0, 5.0); // direction of the light
+  vec3 light1Col = vec3(0.2627, 0.0745, 0.4392); // color of the light
+  float diffuseTerm1 = dot(normalize(norms), normalize(light1Dir));
+  float intensity1 = (diffuseTerm1 + 0.2) * 0.25; // diffuse + ambient
+    
+  vec3 light2Dir = vec3(6.0, 3.0, 5.0); // direction of the light
+  vec3 light2Col = vec3(0.0, 0.0, 1.0);//vec3(0.8, 0.5216, 0.0); // color of the light
+  float diffuseTerm2 = dot(normalize(norms), normalize(light2Dir));
+  float intensity2 = (diffuseTerm2 + 0.2) * 0.25; // diffuse + ambient
+    
+  vec3 light3Dir = vec3(-4.0, 3.0, 5.0); // direction
+  vec3 light3Col = vec3(0.7882, 0.3176, 0.0471); // color 
+  float diffuseTerm3 = dot(normalize(norms), normalize(light3Dir));
+  float intensity3 = (diffuseTerm3 + 0.2) * 0.25; // diffuse + ambient    
+      
+    // floor color
+    if (id == 0.0){
+         // noise for coloring, fbm               
+        coloring = shadows * vec3(0.0, 1.0, 0.0) * lightMult * lightCol * 3.0;
+        coloring += 0.15 * noiseTermGrass; 
+        coloring += cosinePalette(coloring.x + noiseTerm)/6.0;
+        coloring += intensity1 * light1Col;
+        coloring += intensity2 * light2Col;
+        coloring += intensity3 * light3Col;
+        return coloring;
+    }
+    // orange, no specular
+    if (id == 1.0){
+        float noise = smoothstep(0.1, 0.9, texture(iChannel2, point.xy).z);        
+        coloring = vec3(1.0, 0.6902, 0.1922) * lightMult + (0.15 * noise) * shadows;        
+        coloring *= ao * 1.5;
+        coloring += cosinePalette(coloring.y + noiseTerm)/4.0;
+        coloring += intensity1 * light1Col;
+        coloring += intensity2 * light2Col;
+        coloring += intensity3 * light3Col;
+        coloring *= gain(-1.0, 0.4);
+        return coloring;
+    }
+    // orange 2 color
+    if (id == 1.5){
+        float noise = smoothstep(0.1, 0.9, texture(iChannel2, point.xy).x);        
+        coloring = vec3(0.9686, 0.6588, 0.0) * lightMult + (0.15 * noise) * shadows;       
+        coloring *= ao * 1.5;
+        coloring += cosinePalette(coloring.x + noiseTerm)/6.0;
+        coloring += intensity1 * light1Col;
+        coloring += intensity2 * light2Col;
+        coloring += intensity3 * light3Col;
+        return coloring;
+    }  
+    // orange 3 color - center pumpkin
+    if (id == 1.6){
+        float noise = smoothstep(0.1, 0.9, texture(iChannel2, point.xy).x);
+        coloring = vec3(0.9922, 0.5412, 0.0275) * lightMult + (0.15 * noise) * shadows;              
+        coloring *= ao * 1.5;
+        coloring += intensity1 * light1Col;
+        coloring += intensity2 * light2Col;
+        coloring *= gain(-1.0, 0.3);
+        return coloring;
+    }
+    // stem
+    if (id == 3.0){              
+        coloring = vec3(0.4118, 0.3059, 0.0745) * lightMult;
+        coloring *= ao * 1.5;  
+        coloring += intensity1 * light1Col;
+        coloring += intensity2 * light2Col;
+        coloring += intensity3 * light3Col;
+        return coloring;
+    } 
+    // hay bale 
+    if (id == 4.0){
+        float noise = smoothstep(0.0, 1.0, texture(iChannel3, vec2(point.x/8.0, point.y / 2.0)).x);
+        vec3 temp = mix(vec3(0.3725, 0.3216, 0.1725),vec3(0.9255, 0.9725, 0.651), noise );
+        coloring = shadows * temp * lightMult + (0.15 * noise);
+        coloring *= ao * 1.5;
+        coloring += intensity1 * light1Col;
+        coloring += intensity2 * light2Col;
+        coloring += intensity3 * light3Col;
+        return coloring;
+    } 
+    // background fog blue color
+    if (id == 5.0){
+        coloring = vec3(0.102, 0.3333, 0.4863);              
+        return coloring;
+    }  
+    // background fog blue color - animating scarecrow color
+    if (id == 7.0){
+        coloring = vec3(0.102, 0.3333, 0.4863);             
+        return mix(coloring, backgroundCol, sin(iTime * 0.8));
+    }  
+    return vec3(id / 10.0);
+}
+
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+    // Normalized pixel coordinates (from 0 to 1)
+    vec2 uv = fragCoord/iResolution.xy;
+    
+    // Time varying pixel color
+    vec3 col = 0.5 + 0.5*cos(iTime+uv.xyx+vec3(0,2,4));
+     
+    // Ray Marching
+	vec3 dir = rayDirection(45.0, iResolution.xy, fragCoord);
+	vec3 eye = vec3(0.0, 0.0, 20.0);
+
+
+	vec3 marchInfo = vec3(0.0, 0.0, 0.0);
+
+	// MarchInfo to draw the SDFs: .x is the float distance from raymarching, .y is the color ID
+	marchInfo = march(eye, dir, MIN_DIST, MAX_DIST);
+  	float dist = marchInfo.x;
+  	float colorTerm = marchInfo.y;
+    
+   	 if (dist > MAX_DIST - EPSILON) {
+    	 // draw background, not in SDF      	  
+         vec3 col = background( dir );         
+         fragColor = vec4(col, 1.0);         
+	 	 return;
+  	  }
+ 
+	// Lighting
+	vec3 n = getNormals(eye + marchInfo.x * dir);
+	vec3 lightVector = eye;    
+    vec3 lightVectorCol = vec3(0.8, 0.5216, 0.0);
+    
+	// h is the average of the view and light vectors
+	vec3 h = (eye + lightVector) / 2.0;
+	// specular intensity
+	float specularInt = max(pow(dot(normalize(h), normalize(n)), 23.0) , 0.0);  
+	// dot between normals and light direction
+	float diffuseTerm = dot(normalize(n), normalize(lightVector));  
+	// Avoid negative lighting values
+	diffuseTerm = clamp(diffuseTerm, 0.0, 1.0);    
+	float ambientTerm = 0.2;
+	float lightIntensity = diffuseTerm + ambientTerm;    
+    //                         dir, origin, minT, k
+    float shadows = softShadow(normalize(vec3(1.0, 1.0, 1.0)), eye + marchInfo.x * dir, 0.1, 8.0);
+    
+    // distance fog
+    float fog = smoothstep(20.0, 40.0, distance(eye + marchInfo.x * dir, eye));
+    vec3 backgroundCol = background(dir);
+    vec3 color = getColor(colorTerm, lightIntensity, specularInt,eye + marchInfo.x * dir, n, shadows, lightVectorCol, backgroundCol);
+    color = mix(color, backgroundCol, fog);
+    
+	fragColor = vec4(color, 1.0);
+} 

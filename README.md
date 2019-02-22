@@ -30,7 +30,7 @@
 - Pictures of the hay bale progression from the rounded box:
 - ![](haybale.png)
 - ![](haybaleNew.png)
-- Crow's flying motion utilizes noise. Y direction motion is based on a sin curve, iTime, and a noise term. X direction motion is based on a modified sin curve, iTime, and a noise term. Used toolox function smoothstep with FMB to create the noise term used in the crow's movement.
+- Crow's flying motion utilizes noise. Y direction motion is based on a sin curve, iTime, and a noise term. X direction motion is based on a modified sin curve, iTime, and a noise term. Used toolbox function smoothstep with FMB to create the noise term used in the crow's movement.
 - Used hash functions to create the noise with FBM2 function.
 - Coloring of some of the pumkpins tuned with gain and bias toolbox functions. Used to darken some pumkpins.
 - Coloring of the pumkpins and their stems done with FBM and hash noise functions.
